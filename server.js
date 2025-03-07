@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const url = require('url');
 const https = require('https');
+const crypto = require('crypto'); // Built-in module for generating random IDs
 
 // Load environment variables from .env file
 try {
@@ -24,6 +25,17 @@ if (!OPENAI_API_KEY) {
 // Update the port configuration to work with cloud providers
 const PORT = process.env.PORT || 3000;
 console.log(`Using port ${PORT}`);
+
+// Create uploads directory if it doesn't exist
+const uploadDir = path.join(__dirname, 'uploads');
+try {
+    if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+        console.log(`Created uploads directory at ${uploadDir}`);
+    }
+} catch (err) {
+    console.error('Error creating uploads directory:', err);
+}
 
 // Utility function to read files
 const readFile = (filePath) => {
@@ -209,6 +221,153 @@ const server = http.createServer(async (req, res) => {
                 error: 'Failed to fetch follow-up information'
             }));
         }
+    }
+    else if (req.method === 'POST' && pathname === '/api/upload') {
+        try {
+            // Create a random boundary for multipart data parsing
+            const contentType = req.headers['content-type'] || '';
+            const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+            
+            if (!boundaryMatch) {
+                res.statusCode = 400;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ 
+                    success: false, 
+                    error: 'Invalid content type, missing boundary'
+                }));
+                return;
+            }
+            
+            const boundary = boundaryMatch[1] || boundaryMatch[2];
+            let body = [];
+            let fileInfos = [];
+            
+            // Handle incoming data
+            req.on('data', (chunk) => {
+                body.push(chunk);
+            });
+            
+            req.on('end', async () => {
+                try {
+                    const data = Buffer.concat(body);
+                    const filePromises = parseMultipartFormData(data, boundary);
+                    
+                    // Process all files
+                    fileInfos = await Promise.all(filePromises);
+                    
+                    // Send success response
+                    res.statusCode = 200;
+                    res.setHeader('Content-Type', 'application/json');
+                    res.end(JSON.stringify({ 
+                        success: true,
+                        message: `Successfully uploaded ${fileInfos.filter(file => file).length} file(s)`,
+                        files: fileInfos.filter(file => file) // Filter out null values
+                    }));
+                } catch (err) {
+                    console.error('Error processing files:', err);
+                    res.statusCode = 500;
+                    res.setHeader('Content-Type', 'application/json');
+                    res.end(JSON.stringify({ 
+                        success: false, 
+                        error: 'Failed to process uploaded files'
+                    }));
+                }
+            });
+            
+            // Parse multipart form data
+            function parseMultipartFormData(data, boundary) {
+                const boundaryBuffer = Buffer.from(`--${boundary}`);
+                const endingBuffer = Buffer.from(`--${boundary}--`);
+                const lineBreakBuffer = Buffer.from('\r\n\r\n');
+                
+                let startIndex = data.indexOf(boundaryBuffer);
+                const filePromises = [];
+                
+                // While we have boundaries
+                while (startIndex !== -1) {
+                    // Find the next boundary
+                    let endIndex = data.indexOf(boundaryBuffer, startIndex + boundaryBuffer.length);
+                    if (endIndex === -1) {
+                        // Check if it's the ending boundary
+                        endIndex = data.indexOf(endingBuffer, startIndex + boundaryBuffer.length);
+                        if (endIndex === -1) break;
+                    }
+                    
+                    // Get the content between boundaries
+                    const partData = data.slice(startIndex + boundaryBuffer.length + 2, endIndex);
+                    
+                    // Find the header end
+                    const headerEndIndex = partData.indexOf(lineBreakBuffer);
+                    if (headerEndIndex !== -1) {
+                        const headerData = partData.slice(0, headerEndIndex).toString();
+                        
+                        // Check if this part is a file
+                        if (headerData.includes('filename=')) {
+                            // Extract filename
+                            const filenameMatch = headerData.match(/filename="([^"]+)"/);
+                            const contentTypeMatch = headerData.match(/Content-Type: ([^\r\n]+)/);
+                            
+                            if (filenameMatch && filenameMatch[1]) {
+                                const originalFilename = filenameMatch[1];
+                                const contentType = contentTypeMatch ? contentTypeMatch[1] : 'application/octet-stream';
+                                
+                                // Get the file data
+                                const fileData = partData.slice(headerEndIndex + lineBreakBuffer.length);
+                                
+                                // Create unique filename
+                                const uniqueFilename = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}-${originalFilename}`;
+                                const filePath = path.join(uploadDir, uniqueFilename);
+                                
+                                // Save the file
+                                const filePromise = saveFile(filePath, fileData)
+                                    .then(() => {
+                                        // Return file info
+                                        return {
+                                            originalName: originalFilename,
+                                            storedName: uniqueFilename,
+                                            size: fileData.length,
+                                            type: contentType
+                                        };
+                                    })
+                                    .catch(err => {
+                                        console.error('Error saving file:', err);
+                                        return null;
+                                    });
+                                
+                                filePromises.push(filePromise);
+                            }
+                        }
+                    }
+                    
+                    // Move to the next boundary
+                    startIndex = endIndex;
+                }
+                
+                return filePromises;
+            }
+            
+            // Function to save a file
+            function saveFile(filePath, data) {
+                return new Promise((resolve, reject) => {
+                    fs.writeFile(filePath, data, (err) => {
+                        if (err) {
+                            reject(err);
+                        } else {
+                            resolve();
+                        }
+                    });
+                });
+            }
+        } catch (error) {
+            console.error('File upload error:', error);
+            res.statusCode = 500;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ 
+                success: false, 
+                error: 'File upload failed'
+            }));
+        }
+        return;
     }
     // Serve static files
     else {

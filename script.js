@@ -302,4 +302,118 @@ document.addEventListener('DOMContentLoaded', () => {
             searchBtn.disabled = false;
         }
     }
+
+    // File Upload Functionality
+    const fileInput = document.getElementById('file-input');
+    const fileList = document.getElementById('file-list');
+    const uploadForm = document.getElementById('file-upload-form');
+    const uploadStatus = document.getElementById('upload-status');
+    const uploadBtn = document.getElementById('upload-btn');
+    
+    // Array to store selected files
+    let selectedFiles = [];
+    
+    // Handle file selection
+    fileInput.addEventListener('change', () => {
+        // Reset the file list display
+        fileList.innerHTML = '';
+        selectedFiles = [];
+        
+        // Add each file to the list
+        Array.from(fileInput.files).forEach(file => {
+            // Add to selected files array
+            selectedFiles.push(file);
+            
+            // Create file item element
+            const fileItem = document.createElement('div');
+            fileItem.className = 'file-item';
+            
+            // File name
+            const fileName = document.createElement('div');
+            fileName.className = 'file-name';
+            fileName.textContent = file.name;
+            
+            // Remove button
+            const removeBtn = document.createElement('div');
+            removeBtn.className = 'file-remove';
+            removeBtn.innerHTML = '&times;';
+            removeBtn.dataset.filename = file.name;
+            
+            // Add remove functionality
+            removeBtn.addEventListener('click', (e) => {
+                const filename = e.target.dataset.filename;
+                selectedFiles = selectedFiles.filter(file => file.name !== filename);
+                e.target.parentElement.remove();
+                updateFileInputFiles();
+            });
+            
+            // Add elements to file item
+            fileItem.appendChild(fileName);
+            fileItem.appendChild(removeBtn);
+            
+            // Add file item to list
+            fileList.appendChild(fileItem);
+        });
+    });
+    
+    // Update file input with selected files
+    function updateFileInputFiles() {
+        // Create a new DataTransfer object
+        const dataTransfer = new DataTransfer();
+        
+        // Add all files from our array to it
+        selectedFiles.forEach(file => {
+            dataTransfer.items.add(file);
+        });
+        
+        // Update the input's files property
+        fileInput.files = dataTransfer.files;
+    }
+    
+    // Handle form submission
+    uploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        if (selectedFiles.length === 0) {
+            uploadStatus.innerHTML = '<p class="upload-error">Please select files to upload</p>';
+            return;
+        }
+        
+        try {
+            // Change button state
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = 'Uploading...';
+            
+            // Create form data
+            const formData = new FormData();
+            selectedFiles.forEach(file => {
+                formData.append('files', file);
+            });
+            
+            // Send the request
+            const response = await fetch('/api/upload', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                uploadStatus.innerHTML = `<p class="upload-success">${result.message || 'Files uploaded successfully!'}</p>`;
+                // Clear files after successful upload
+                fileList.innerHTML = '';
+                selectedFiles = [];
+                fileInput.value = '';
+            } else {
+                uploadStatus.innerHTML = `<p class="upload-error">${result.error || 'Upload failed'}</p>`;
+            }
+        } catch (error) {
+            console.error('Upload error:', error);
+            uploadStatus.innerHTML = '<p class="upload-error">Failed to upload files. Please try again.</p>';
+        } finally {
+            // Reset button state
+            uploadBtn.disabled = false;
+            uploadBtn.textContent = 'Upload Files';
+        }
+    });
 }); 
